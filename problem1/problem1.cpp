@@ -1,37 +1,86 @@
+class WriteAheadSynchronization {
+private:
+    vector<bool> taskCompletionLogs;
+    mutex logAccessMutex;
+
+    vector<condition_variable> priorTaskCompletedCVs;
+    vector<condition_variable> currentTaskCompletedCVs;
+    vector<mutex> taskExecutionMutexes;
+
+public:
+    WriteAheadSynchronization(int taskCount)
+        : taskCompletionLogs(taskCount, false),
+            priorTaskCompletedCVs(taskCount),
+            currentTaskCompletedCVs(taskCount),
+            taskExecutionMutexes(taskCount) {}
+
+    void registerAndAwait(function<void()> task, int orderPosition) {
+        // Has prior task been accomplished?
+        priorTaskCompletionBarrier(orderPosition);
+
+        // Current task is executed. Note: task must not contain bugs.
+        { task(); declareCompleted(orderPosition); }
+
+        // Has current task been accomplished?
+        currentTaskCompletionBarrier(orderPosition);
+        
+        // Succeeding task is notified of its prior's completion.
+        notifySucceedingTask(orderPosition);
+    }
+
+private:
+    void priorTaskCompletionBarrier(int thisOrderPosition) {
+        unique_lock localMemoryFence(taskExecutionMutexes[thisOrderPosition]);
+        while (!isCompleted(thisOrderPosition - 1)) {
+            priorTaskCompletedCVs[thisOrderPosition].wait(localMemoryFence);
+        }
+    }
+
+    void currentTaskCompletionBarrier(int thisOrderPosition) {
+        unique_lock localMemoryFence(taskExecutionMutexes[thisOrderPosition]);
+        while (!isCompleted(thisOrderPosition)) {
+            currentTaskCompletedCVs[thisOrderPosition].wait(localMemoryFence);
+        }
+    }
+
+    bool isCompleted(int thisOrderPosition) {
+        if (thisOrderPosition == -1) { return true; }
+
+        {   scoped_lock currentlyUsingLogs(logAccessMutex);
+            return taskCompletionLogs[thisOrderPosition];
+        }
+    }
+
+    void declareCompleted(int thisOrderPosition) {
+        {   scoped_lock currentlyUsingLogs(logAccessMutex);
+            taskCompletionLogs[thisOrderPosition] = true;
+        }
+        currentTaskCompletedCVs[thisOrderPosition].notify_one();
+    }
+
+    void notifySucceedingTask(int thisOrderPosition) {
+        if (thisOrderPosition+1 < priorTaskCompletedCVs.size()) {
+            priorTaskCompletedCVs[thisOrderPosition+1].notify_one();
+        }
+    }
+};
+
 class Foo {
 private:
-    mutex m;
-    condition_variable cv;
-    int turn;
-    
+    WriteAheadSynchronization sync;
+
 public:
-    Foo() : turn(0) { }
+    Foo() : sync(WriteAheadSynchronization(3)) { }
 
     void first(function<void()> printFirst) {
-        turnWrapper(printFirst, 0);
+        sync.registerAndAwait(printFirst, 0);
     }
 
     void second(function<void()> printSecond) {
-        turnWrapper(printSecond, 1);
+        sync.registerAndAwait(printSecond, 1);
     }
 
     void third(function<void()> printThird) {
-        turnWrapper(printThird, 2);
-    }
-
-    void turnWrapper(function<void()> whichPrint, int whichTurn) {
-        unique_lock<mutex> lock(m);
-        cv.wait(lock, [this, whichTurn]{return turn == whichTurn;});
-
-        try {
-            whichPrint();
-            fflush(stdout); // Woe to he who uses std::cout in a multithreaded environment.
-        } catch (...) {
-            // Abandon all hope, for std::cout can and *WILL* throw exceptions at the least opportune time.
-        }
-        turn++;
-
-        lock.unlock();
-        cv.notify_all();
+        sync.registerAndAwait(printThird, 2);
     }
 };
