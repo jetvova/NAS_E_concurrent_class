@@ -19,7 +19,7 @@ public:
         priorTaskCompletionBarrier(orderPosition);
 
         // Current task is executed. Note: task must not contain bugs.
-        { task(); declareCompleted(orderPosition); }
+        executeCurrentTask(task, orderPosition);
 
         // Has current task been accomplished?
         currentTaskCompletionBarrier(orderPosition);
@@ -36,10 +36,22 @@ private:
         }
     }
 
+    void executeCurrentTask(function<void()> task, int thisOrderPosition) {
+        task();
+        markAsCompleted(thisOrderPosition);
+        currentTaskCompletedCVs[thisOrderPosition].notify_one();
+    }
+
     void currentTaskCompletionBarrier(int thisOrderPosition) {
         unique_lock localMemoryFence(taskExecutionMutexes[thisOrderPosition]);
         while (!isCompleted(thisOrderPosition)) {
             currentTaskCompletedCVs[thisOrderPosition].wait(localMemoryFence);
+        }
+    }
+    
+    void notifySucceedingTask(int thisOrderPosition) {
+        if (thisOrderPosition+1 < priorTaskCompletedCVs.size()) {
+            priorTaskCompletedCVs[thisOrderPosition+1].notify_one();
         }
     }
 
@@ -51,16 +63,9 @@ private:
         }
     }
 
-    void declareCompleted(int thisOrderPosition) {
+    void markAsCompleted(int thisOrderPosition) {
         {   scoped_lock currentlyUsingLogs(logAccessMutex);
             taskCompletionLogs[thisOrderPosition] = true;
-        }
-        currentTaskCompletedCVs[thisOrderPosition].notify_one();
-    }
-
-    void notifySucceedingTask(int thisOrderPosition) {
-        if (thisOrderPosition+1 < priorTaskCompletedCVs.size()) {
-            priorTaskCompletedCVs[thisOrderPosition+1].notify_one();
         }
     }
 };

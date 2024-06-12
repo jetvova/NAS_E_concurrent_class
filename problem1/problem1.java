@@ -22,7 +22,7 @@ class WriteAheadSynchronization {
         priorTaskCompletionBarrier(orderPosition);
 
         // Current task is being executed. Note: task must not contain bugs.
-        { task.run(); declareCompleted(orderPosition); }
+        executeCurrentTask(task, orderPosition);
 
         // Has current task has been accomplished?
         currentTaskCompletionBarrier(orderPosition);
@@ -43,6 +43,14 @@ class WriteAheadSynchronization {
         }
     }
 
+    private void executeCurrentTask(Runnable task, int thisOrderPosition) {
+        task.run();
+        markAsCompleted(thisOrderPosition);
+        synchronized (currentTaskCompletionLocks.get(thisOrderPosition)) {
+            currentTaskCompletionLocks.get(thisOrderPosition).notify();
+        }
+    }
+
     private void currentTaskCompletionBarrier(int thisOrderPosition) {
         synchronized (currentTaskCompletionLocks.get(thisOrderPosition)) {
             while (!isCompleted(thisOrderPosition)) {
@@ -55,6 +63,14 @@ class WriteAheadSynchronization {
         }
     }
 
+    void notifySucceedingTask(int thisOrderPosition) {
+        if (thisOrderPosition+1 < priorTaskCompletionLocks.size()) {
+            synchronized (priorTaskCompletionLocks.get(thisOrderPosition+1)) {
+                priorTaskCompletionLocks.get(thisOrderPosition+1).notify();
+            }
+        }
+    }
+
     private boolean isCompleted(int thisOrderPosition) {
         if (thisOrderPosition == -1) { return true; }
 
@@ -63,21 +79,9 @@ class WriteAheadSynchronization {
         }
     }
 
-    private void declareCompleted(int thisOrderPosition) {
+    private void markAsCompleted(int thisOrderPosition) {
         synchronized (logAccessLock) {
             taskCompletionLogs.set(thisOrderPosition, true);
-        }
-
-        synchronized (currentTaskCompletionLocks.get(thisOrderPosition)) {
-            currentTaskCompletionLocks.get(thisOrderPosition).notify();
-        }
-    }
-
-    void notifySucceedingTask(int thisOrderPosition) {
-        if (thisOrderPosition+1 < priorTaskCompletionLocks.size()) {
-            synchronized (priorTaskCompletionLocks.get(thisOrderPosition+1)) {
-                priorTaskCompletionLocks.get(thisOrderPosition+1).notify();
-            }
         }
     }
 }
